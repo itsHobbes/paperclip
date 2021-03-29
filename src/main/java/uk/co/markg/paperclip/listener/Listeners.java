@@ -1,4 +1,4 @@
-package uk.co.markg.paperclip;
+package uk.co.markg.paperclip.listener;
 
 import java.util.HashSet;
 import java.util.Iterator;
