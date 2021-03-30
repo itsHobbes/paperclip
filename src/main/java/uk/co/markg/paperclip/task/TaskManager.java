@@ -1,10 +1,10 @@
 package uk.co.markg.paperclip.task;
 
 import java.lang.reflect.Method;
-import java.util.ArrayList;
 import java.util.Collections;
-import java.util.List;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
@@ -22,15 +22,15 @@ public class TaskManager {
 
     private static volatile TaskManager instance;
     private JDA jda;
-    private final Map<Class<? extends Runnable>, ScheduledFuture<?>> tasks;
+    private final Map<Class<? extends Runnable>, ScheduledFuture<?>> runningTasks;
     private final ScheduledExecutorService scheduler;
-    private final List<Class<? extends Runnable>> disabledTasks;
+    private final Set<Class<? extends Runnable>> disabledTasks;
 
     private TaskManager(JDA jda, String taskPackage) {
         this.jda = jda;
-        this.tasks = new ConcurrentHashMap<>();
+        this.runningTasks = new ConcurrentHashMap<>();
         this.scheduler = Executors.newScheduledThreadPool(INIT_POOL_SIZE);
-        this.disabledTasks = Collections.synchronizedList(new ArrayList<>());
+        this.disabledTasks = Collections.synchronizedSet(new HashSet<>());
         registerTasks(taskPackage);
     }
 
@@ -52,14 +52,17 @@ public class TaskManager {
             disabledTasks.add(taskClass);
             return;
         }
-        startTask(taskClass, taskDetails);
+        startTask(taskClass);
     }
 
     private void addTask(Object task, long initialDelay, Task taskDetails,
             Class<? extends Runnable> taskClass) {
         var future = scheduler.scheduleAtFixedRate((Runnable) task, initialDelay,
                 taskDetails.frequency(), taskDetails.unit());
-        tasks.put(taskClass, future);
+        runningTasks.put(taskClass, future);
+        if (disabledTasks.contains(taskClass)) {
+            disabledTasks.remove(taskClass);
+        }
         logger.info("Registered {} Task with delay {}", taskClass.getSimpleName(), initialDelay);
     }
 
@@ -74,18 +77,13 @@ public class TaskManager {
         return instance;
     }
 
-    public void startTask(String taskName) {
-        try {
-            Class<? extends Runnable> taskClass = findStoppedTask(taskName);
-            Task taskDetails = taskClass.getAnnotation(Task.class);
-            startTask(taskClass, taskDetails);
-        } catch (ClassNotFoundException e) {
-            logger.error("Error starting task {}", taskName, e);
-        }
+    public boolean startTask(String taskName) {
+        return findStoppedTask(taskName).map(task -> startTask(task)).orElse(false);
     }
 
-    private void startTask(Class<? extends Runnable> taskClass, Task taskDetails) {
+    private boolean startTask(Class<? extends Runnable> taskClass) {
         try {
+            Task taskDetails = taskClass.getAnnotation(Task.class);
             long initialDelay = 0;
             Object taskObject = taskClass.getConstructor(JDA.class).newInstance(jda);
             if (DelayedTask.class.isAssignableFrom(taskClass)) {
@@ -93,40 +91,43 @@ public class TaskManager {
                 initialDelay = (long) getDelay.invoke(taskObject);
             }
             addTask(taskObject, initialDelay, taskDetails, taskClass);
+            return true;
         } catch (ReflectiveOperationException e) {
             logger.error("Error starting tasks", e);
         }
+        return false;
     }
 
-    public Set<Class<? extends Runnable>> getTasks() {
-        return tasks.keySet();
+    public Set<Class<? extends Runnable>> getRunningTasks() {
+        return runningTasks.keySet();
     }
 
-    public void stopTask(String taskName) {
-        try {
-            Class<? extends Runnable> taskClass = findRunningTask(taskName);
-            var future = tasks.get(taskClass);
-            if (future != null) {
-                disabledTasks.add(taskClass);
-                future.cancel(false);
-                tasks.remove(taskClass);
-                logger.info("Task {} stopped", taskName);
-            }
-        } catch (ClassNotFoundException e) {
-            logger.error("Error stopping task {}", taskName, e);
+    public Set<Class<? extends Runnable>> getStoppedTasks() {
+        return disabledTasks;
+    }
+
+    public boolean stopTask(String taskName) {
+        return findRunningTask(taskName).map(task -> cancelTask(task)).orElse(false);
+    }
+
+    private boolean cancelTask(Class<? extends Runnable> task) {
+        var future = runningTasks.get(task);
+        if (future != null) {
+            disabledTasks.add(task);
+            future.cancel(false);
+            runningTasks.remove(task);
+            logger.info("Task {} stopped", task.getName());
         }
+        return true;
     }
 
-    private Class<? extends Runnable> findStoppedTask(String taskName)
-            throws ClassNotFoundException {
+    private Optional<Class<? extends Runnable>> findStoppedTask(String taskName) {
         return disabledTasks.stream().filter(task -> task.getSimpleName().equals(taskName))
-                .findFirst().orElseThrow(ClassNotFoundException::new);
+                .findFirst();
     }
 
-    private Class<? extends Runnable> findRunningTask(String taskName)
-            throws ClassNotFoundException {
-        return tasks.keySet().stream().filter(task -> task.getSimpleName().equals(taskName))
-                .findFirst().orElseThrow(ClassNotFoundException::new);
+    private Optional<Class<? extends Runnable>> findRunningTask(String taskName) {
+        return runningTasks.keySet().stream().filter(task -> task.getSimpleName().equals(taskName))
+                .findFirst();
     }
-
 }
