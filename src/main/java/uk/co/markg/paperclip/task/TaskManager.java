@@ -44,7 +44,9 @@ public class TaskManager {
 
     private void registerTask(Class<? extends Runnable> taskClass) {
         if (!taskClass.isAnnotationPresent(Task.class)) {
-            logger.error("Task {} does not have the @Task annotation", taskClass.getName());
+            logger.warn(
+                    "Class {} does not have the @Task annotation. This can be ignored if it is not meant to be a task class.",
+                    taskClass.getName());
             return;
         }
         Task taskDetails = taskClass.getAnnotation(Task.class);
